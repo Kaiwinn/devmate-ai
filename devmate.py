@@ -11,6 +11,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
+from file_handler import read_files_for_review
 
 from prompts import (
     CHAT_PROMPT,
@@ -223,23 +224,33 @@ def switch_mode(mode: str):
 
 
 def show_help():
-    """In bảng commands."""
     table = Table(title="🛠️  DevMate Commands", show_header=True)
-    table.add_column("Command", style="cyan", width=20)
+    table.add_column("Command", style="cyan", width=30)
     table.add_column("Mô tả", style="white")
     
-    table.add_row("/chat", "Mode chat thường")
-    table.add_row("/code", "Mode code review")
-    table.add_row("/test", "Mode sinh unit test")
-    table.add_row("/explain", "Mode giải thích code")
+    table.add_section()
+    table.add_row("[bold]/code <file/folder>[/bold]", "Review 1 file hoặc folder")
+    table.add_row("[bold]/test <file>[/bold]", "Sinh unit test cho file")
+    table.add_row("[bold]/explain <file>[/bold]", "Giải thích code trong file")
+    table.add_row("/chat", "Quay về chat thường")
+    
+    table.add_section()
     table.add_row("/save", "Lưu lịch sử chat")
     table.add_row("/load", "Load chat đã lưu")
-    table.add_row("/clear", "Xóa lịch sử chat hiện tại")
-    table.add_row("/stats", "Xem token usage & cost")
+    table.add_row("/clear", "Xóa lịch sử")
+    table.add_row("/stats", "Token usage & cost")
     table.add_row("/help", "Hiện bảng này")
     table.add_row("/quit", "Thoát")
     
     console.print(table)
+    
+    # Examples
+    console.print("\n[bold yellow]📚 Ví dụ:[/bold yellow]")
+    console.print("  /code src/auth.py              [dim]# review 1 file[/dim]")
+    console.print("  /code src/auth/                [dim]# review cả folder[/dim]")
+    console.print('  /code "src/**/*.py"            [dim]# glob pattern[/dim]')
+    console.print("  /test utils/helper.js          [dim]# sinh test[/dim]")
+    console.print("  /explain components/Login.tsx  [dim]# giải thích code[/dim]")
 
 
 # ============================================================
@@ -292,11 +303,33 @@ def main():
                 save_chat()
             elif cmd == "/load":
                 load_chat()
-            elif cmd in ["/chat", "/code", "/test", "/explain"]:
-                switch_mode(cmd[1:])  # bỏ dấu /
-            else:
-                console.print(f"[red]❌ Command không tồn tại: {cmd}[/red]")
-                console.print("[dim]Gõ /help để xem commands[/dim]")
+            # Xử lý mode commands — có thể kèm file path
+            elif user_input.startswith(("/code", "/test", "/explain", "/chat")):
+                parts = user_input.split(maxsplit=1)
+                mode_cmd = parts[0][1:]  # bỏ dấu /
+                arg = parts[1] if len(parts) > 1 else None
+                
+                if arg:
+                    # Có file path → đọc file và review luôn
+                    switch_mode(mode_cmd)
+                    file_content = read_files_for_review(arg)
+                    
+                    if file_content:
+                        # Tạo message cho LLM với context rõ ràng
+                        instruction_map = {
+                            "code": "Hãy review code trong các file sau:",
+                            "test": "Hãy viết unit tests cho các function trong file sau:",
+                            "explain": "Hãy giải thích code trong các file sau:",
+                            "chat": "Hãy phân tích các file sau:",
+                        }
+                        
+                        full_prompt = f"{instruction_map[mode_cmd]}\n\n{file_content}"
+                        
+                        console.print(f"\n[bold magenta]DevMate ({mode_cmd}):[/bold magenta]")
+                        chat_stream(full_prompt)
+                else:
+                    # Không có arg → chỉ switch mode (giống cũ)
+                    switch_mode(mode_cmd)
             
             continue
         
