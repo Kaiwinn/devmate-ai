@@ -1,0 +1,91 @@
+{
+  "summary": "Code có nhiều lỗ hổng bảo mật nghiêm trọng bao gồm SQL Injection và sử dụng MD5 cho password. Cần sửa ngay lập tức trước khi deploy. Ngoài ra còn thiếu error handling và input validation cơ bản.",
+  "overall_score": 2,
+  "total_issues": 7,
+  "issues": [
+    {
+      "severity": "critical",
+      "category": "security",
+      "title": "SQL Injection vulnerability",
+      "description": "Query sử dụng f-string để nối trực tiếp username vào câu SQL, cho phép attacker inject SQL code tùy ý",
+      "file_path": "test_code/auth.py",
+      "line_start": 5,
+      "line_end": 5,
+      "suggested_fix": "user = db.query(\"SELECT * FROM users WHERE name=?\", (username,))\n# Hoặc dùng ORM:\n# user = User.query.filter_by(name=username).first()",
+      "explanation": "Kẻ tấn công có thể nhập username như \"admin' OR '1'='1\" để bypass authentication hoặc \"'; DROP TABLE users; --\" để xóa dữ liệu. Đây là lỗ hổng OWASP Top 10 #1."
+    },
+    {
+      "severity": "critical",
+      "category": "security",
+      "title": "Weak password hashing algorithm (MD5)",
+      "description": "Sử dụng MD5 để hash password - thuật toán đã lỗi thời và dễ bị rainbow table/brute force attack",
+      "file_path": "test_code/auth.py",
+      "line_start": 8,
+      "line_end": 8,
+      "suggested_fix": "import bcrypt\n\n# Khi hash password:\nhashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())\n\n# Khi verify:\nif user and bcrypt.checkpw(password.encode(), user.password.encode()):",
+      "explanation": "MD5 không còn an toàn cho password vì: (1) Tốc độ quá nhanh giúp brute-force dễ dàng, (2) Không có salt nên dễ bị rainbow table attack, (3) Đã có collision attacks. Nên dùng bcrypt, argon2, hoặc PBKDF2."
+    },
+    {
+      "severity": "high",
+      "category": "security",
+      "title": "Missing input validation",
+      "description": "Không validate username và password trước khi xử lý, có thể dẫn đến các vấn đề bảo mật và lỗi runtime",
+      "file_path": "test_code/auth.py",
+      "line_start": 4,
+      "line_end": 4,
+      "suggested_fix": "def login(username, password):\n    # Validate inputs\n    if not username or not password:\n        return {\"status\": \"error\", \"message\": \"Username and password required\"}\n    \n    if not isinstance(username, str) or not isinstance(password, str):\n        return {\"status\": \"error\", \"message\": \"Invalid input type\"}\n    \n    if len(username) > 100 or len(password) > 100:\n        return {\"status\": \"error\", \"message\": \"Input too long\"}\n    \n    # Continue with authentication...",
+      "explanation": "Thiếu validation có thể dẫn đến: (1) TypeError nếu truyền None hoặc non-string, (2) DoS nếu input quá dài, (3) Các lỗi encoding khi hash password. Best practice là luôn validate input ở đầu function."
+    },
+    {
+      "severity": "high",
+      "category": "bug",
+      "title": "Missing error handling for database query",
+      "description": "Không handle exception khi query database, có thể gây crash application nếu DB connection fail hoặc query error",
+      "file_path": "test_code/auth.py",
+      "line_start": 5,
+      "line_end": 5,
+      "suggested_fix": "try:\n    user = db.query(\"SELECT * FROM users WHERE name=?\", (username,))\nexcept DatabaseError as e:\n    logger.error(f\"Database error during login: {e}\")\n    return {\"status\": \"error\", \"message\": \"Authentication service unavailable\"}",
+      "explanation": "Nếu database connection bị mất hoặc có lỗi query, function sẽ raise exception không được handle, gây crash ứng dụng. Nên wrap database operations trong try-except để graceful degradation."
+    },
+    {
+      "severity": "medium",
+      "category": "security",
+      "title": "Information disclosure through return values",
+      "description": "Trả về None khi fail và object khi success, cho phép attacker biết được username có tồn tại hay không (user enumeration)",
+      "file_path": "test_code/auth.py",
+      "line_start": 11,
+      "line_end": 12,
+      "suggested_fix": "if user and user.password == hashed:\n    return {\"status\": \"success\", \"user_id\": user.id}\nreturn {\"status\": \"error\", \"message\": \"Invalid username or password\"}",
+      "explanation": "Message chung 'Invalid username or password' không cho attacker biết được username có tồn tại hay password sai, giảm khả năng user enumeration. Nên trả về cùng format response để tránh timing attack."
+    },
+    {
+      "severity": "medium",
+      "category": "code_smell",
+      "title": "Undefined variable 'db'",
+      "description": "Biến 'db' không được định nghĩa trong function, phụ thuộc vào global variable - vi phạm dependency injection principle",
+      "file_path": "test_code/auth.py",
+      "line_start": 5,
+      "line_end": 5,
+      "suggested_fix": "def login(username, password, db_connection):\n    \"\"\"Authenticate user with username and password.\n    \n    Args:\n        username: User's username\n        password: User's plain password\n        db_connection: Database connection object\n    \"\"\"\n    user = db_connection.query(...)",
+      "explanation": "Sử dụng global variable 'db' làm code khó test (phải mock global state), khó maintain, và vi phạm Dependency Injection. Nên truyền db_connection qua parameter hoặc dùng dependency injection framework."
+    },
+    {
+      "severity": "low",
+      "category": "best_practice",
+      "title": "Missing docstring and type hints",
+      "description": "Function thiếu docstring và type hints, gây khó khăn cho việc maintain và sử dụng",
+      "file_path": "test_code/auth.py",
+      "line_start": 3,
+      "line_end": 3,
+      "suggested_fix": "from typing import Optional, Dict, Any\n\ndef login(username: str, password: str) -> Optional[Dict[str, Any]]:\n    \"\"\"Authenticate user with username and password.\n    \n    Args:\n        username: The username to authenticate\n        password: The plain text password\n        \n    Returns:\n        Dict containing status and user_id if successful, None otherwise\n        \n    Raises:\n        DatabaseError: If database connection fails\n    \"\"\"",
+      "explanation": "Type hints giúp IDE autocomplete, static type checking với mypy/pyright, và self-document code. Docstring giúp developers hiểu cách sử dụng function mà không cần đọc implementation."
+    }
+  ],
+  "strengths": [
+    "Code ngắn gọn, dễ hiểu logic flow cơ bản",
+    "Có comment chỉ ra bugs, cho thấy developer đã nhận biết được vấn đề"
+  ],
+  "files_reviewed": [
+    "test_code/auth.py"
+  ]
+}

@@ -13,6 +13,8 @@ from rich.prompt import Prompt
 from rich.table import Table
 from file_handler import read_files_for_review
 from tools import TOOLS_SCHEMA, execute_tool
+from schemas import CodeReviewReport
+from structured_output import call_with_schema
 
 from prompts import (
     CHAT_PROMPT,
@@ -20,6 +22,7 @@ from prompts import (
     TEST_GENERATION_PROMPT,
     EXPLAIN_PROMPT,
     AGENT_PROMPT,
+    STRUCTURED_REVIEW_PROMPT,
 )
 
 # ============================================================
@@ -220,6 +223,108 @@ def agent_loop(user_message: str, max_iterations: int = 10):
     )
 
 
+def structured_code_review(file_pattern: str):
+    """
+    Review code theo schema, lưu kết quả JSON.
+    Demo Structured Output pattern.
+    """
+    global total_input_tokens, total_output_tokens
+
+    # Đọc file
+    file_content = read_files_for_review(file_pattern)
+    if not file_content:
+        return
+
+    console.print(
+        "\n[bold magenta]🔍 DevMate đang review (structured)...[/bold magenta]"
+    )
+
+    # Gọi LLM với schema
+    report, usage = call_with_schema(
+        client=client,
+        model="claude-sonnet-4-5",
+        system_prompt=STRUCTURED_REVIEW_PROMPT,
+        user_message=f"Review code sau:\n\n{file_content}",
+        schema=CodeReviewReport,
+        max_tokens=8192,
+    )
+
+    # Update tokens
+    total_input_tokens += usage["input_tokens"]
+    total_output_tokens += usage["output_tokens"]
+    cost = calculate_cost(usage["input_tokens"], usage["output_tokens"])
+    console.print(
+        f"[dim]📊 {usage['input_tokens']} in + {usage['output_tokens']} out = ${cost:.6f}[/dim]"
+    )
+
+    if not report:
+        return
+
+    # In ra terminal đẹp
+    display_review_report(report)
+
+    # Lưu JSON ra file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = DATA_DIR / f"review_{timestamp}.json"
+    with open(output_file, "w", encoding="utf-8") as f:
+        # Pydantic có method tự dump JSON
+        json.dump(report.model_dump(), f, ensure_ascii=False, indent=2, default=str)
+    console.print(f"[green]💾 Đã lưu báo cáo vào {output_file}[/green]")
+
+
+def display_review_report(report: CodeReviewReport):
+    """In báo cáo review đẹp ra terminal."""
+    # Header
+    score_color = (
+        "green"
+        if report.overall_score >= 7
+        else "yellow"
+        if report.overall_score >= 4
+        else "red"
+    )
+
+    console.print(
+        Panel.fit(
+            f"[bold]📊 Code Review Report[/bold]\n\n"
+            f"[bold]Score:[/bold] [{score_color}]{report.overall_score}/10[/{score_color}]\n"
+            f"[bold]Total Issues:[/bold] {report.total_issues}\n"
+            f"[bold]Files:[/bold] {', '.join(report.files_reviewed) if report.files_reviewed else 'N/A'}\n\n"
+            f"[italic]{report.summary}[/italic]",
+            border_style=score_color,
+        )
+    )
+
+    # Issues
+    if report.issues:
+        console.print("\n[bold red]🐛 Issues:[/bold red]")
+
+        severity_colors = {
+            "critical": "red",
+            "high": "red",
+            "medium": "yellow",
+            "low": "blue",
+            "info": "dim",
+        }
+
+        for i, issue in enumerate(report.issues, 1):
+            color = severity_colors.get(issue.severity.value, "white")
+            console.print(
+                f"\n[bold {color}]#{i} [{issue.severity.value.upper()}] {issue.title}[/bold {color}]"
+            )
+            console.print(f"  📁 {issue.file_path}:{issue.line_start}-{issue.line_end}")
+            console.print(f"  🏷️  Category: {issue.category.value}")
+            console.print(f"  📝 {issue.description}")
+            console.print(f"  💡 Why: {issue.explanation}")
+            console.print(f"  ✨ Fix:")
+            console.print(Panel(issue.suggested_fix, border_style="dim"))
+
+    # Strengths
+    if report.strengths:
+        console.print("\n[bold green]✅ Strengths:[/bold green]")
+        for s in report.strengths:
+            console.print(f"  • {s}")
+
+
 # ============================================================
 # UTILITIES
 # ============================================================
@@ -347,6 +452,10 @@ def show_help():
         "[bold yellow]Agent tự khám phá & làm task[/bold yellow]",
     )
     table.add_row("[bold]/code <file/folder>[/bold]", "Review 1 file hoặc folder")
+    table.add_row(
+        "[bold]/review <file>[/bold]",
+        "[bold yellow]Code review chuẩn JSON, có lưu file[/bold yellow]",
+    )
     table.add_row("[bold]/test <file>[/bold]", "Sinh unit test cho file")
     table.add_row("[bold]/explain <file>[/bold]", "Giải thích code trong file")
     table.add_row("/chat", "Quay về chat thường")
@@ -462,7 +571,13 @@ def main():
                 else:
                     # Không có arg → chỉ switch mode (giống cũ)
                     switch_mode(mode_cmd)
-
+            # Command /review (structured output)
+            elif cmd.startswith("/review"):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) < 2:
+                    console.print("[red]❌ Cần file path. Vd: /review devmate.py[/red]")
+                else:
+                    structured_code_review(parts[1])
             continue
 
         # Single-line input bình thường → gửi LLM
