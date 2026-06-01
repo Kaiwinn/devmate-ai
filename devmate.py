@@ -15,6 +15,16 @@ from tools import TOOLS_SCHEMA, execute_tool
 from schemas import CodeReviewReport
 from structured_output import call_with_schema
 from providers import LLMProvider, PRESETS, create_provider
+from context_manager import (
+    SUMMARIZE_PROMPT,
+    estimate_tokens,
+    summarize_history,
+    total_tokens,
+    trim_history_sliding,
+)
+from error_handler import parse_provider_error
+from retry_helper import retry_with_backoff
+from fallback_chain import try_with_fallback
 
 from prompts import (
     CHAT_PROMPT,
@@ -30,6 +40,16 @@ from prompts import (
 # ============================================================
 load_dotenv()
 console = Console()
+
+# Context management
+MAX_CONTEXT_TOKENS = 30_000
+CONTEXT_STRATEGY = "sliding"  # "summarize" | "sliding" | "off"
+KEEP_RECENT_MESSAGES = 6
+
+# Resilience
+ENABLE_RETRY = True
+ENABLE_FALLBACK = False  # Tắt mặc định, user bật bằng /fallback on
+MAX_RETRIES = 2
 
 # Giá Sonnet 4.5 (giả định, cập nhật theo thực tế)
 current_provider: LLMProvider = create_provider("claude-sonnet")
@@ -60,84 +80,115 @@ MODE_PROMPTS = {
 # CORE: chat function
 # ============================================================
 def chat_stream(user_message: str) -> str:
-    """Stream response từ current provider."""
-    global total_input_tokens, total_output_tokens
+    """Stream response từ current provider, với resilience."""
+    global total_input_tokens, total_output_tokens, current_provider
+
+    # 🆕 Manage context trước
+    manage_context_if_needed()
 
     conversation_history.append({"role": "user", "content": user_message})
 
-    full_response = ""
+    def do_stream(provider) -> str:
+        """Inner function để retry/fallback."""
+        full = ""
+        for text in provider.chat_stream(
+            messages=conversation_history,
+            system=MODE_PROMPTS[current_mode],
+            max_tokens=2048,
+        ):
+            console.print(text, end="", style="cyan")
+            full += text
+        console.print()
+        return full
 
-    # Dùng provider abstract — không quan trọng là Claude/GPT/Gemini
-    for text in current_provider.chat_stream(
-        messages=conversation_history,
-        system=MODE_PROMPTS[current_mode],
-        max_tokens=2048,
-    ):
-        console.print(text, end="", style="cyan")
-        full_response += text
+    try:
+        # Áp dụng retry và/hoặc fallback
+        if ENABLE_FALLBACK:
+            full_response, used_provider = try_with_fallback(
+                do_stream, current_provider
+            )
+            # Update current_provider nếu đã fallback
+            if used_provider.provider_name != current_provider.provider_name:
+                current_provider = used_provider
+        elif ENABLE_RETRY:
+            full_response = retry_with_backoff(
+                lambda: do_stream(current_provider),
+                max_retries=MAX_RETRIES,
+            )
+        else:
+            full_response = do_stream(current_provider)
 
-    console.print()  # newline
+        # Save & track
+        conversation_history.append({"role": "assistant", "content": full_response})
 
-    conversation_history.append({"role": "assistant", "content": full_response})
+        usage = current_provider.get_last_usage()
+        total_input_tokens += usage.input_tokens
+        total_output_tokens += usage.output_tokens
 
-    # Lấy usage sau stream
-    usage = current_provider.get_last_usage()
-    total_input_tokens += usage.input_tokens
-    total_output_tokens += usage.output_tokens
+        cost = current_provider.calculate_cost(usage)
+        console.print(
+            f"[dim]📊 [{current_provider.provider_name}] "
+            f"{usage.input_tokens} in + {usage.output_tokens} out = ${cost:.6f}[/dim]"
+        )
 
-    cost = current_provider.calculate_cost(usage)
-    console.print(
-        f"[dim]📊 [{current_provider.provider_name}] "
-        f"{usage.input_tokens} in + {usage.output_tokens} out = ${cost:.6f}[/dim]"
-    )
+        return full_response
 
-    return full_response
+    except Exception as e:
+        # Rollback user message
+        if conversation_history and conversation_history[-1]["role"] == "user":
+            conversation_history.pop()
+
+        parsed = parse_provider_error(e)
+        console.print(f"\n[red]❌ {parsed.user_message}[/red]")
+        console.print(f"[yellow]💡 {parsed.suggestion}[/yellow]")
+        return ""
 
 
 def agent_loop(user_message: str, max_iterations: int = 10):
-    """
-    Agent loop: LLM có thể gọi tools nhiều lần đến khi xong task.
-
-    Flow:
-    1. Gửi message + tools schema cho LLM
-    2. LLM trả về: text response HOẶC tool_use request
-    3. Nếu là tool_use → execute tool → gửi kết quả về LLM
-    4. Loop đến khi LLM trả về text cuối (stop_reason='end_turn')
-    """
     global total_input_tokens, total_output_tokens
 
-    conversation_history.append(
-        {
-            "role": "user",
-            "content": user_message,
-        }
-    )
+    # 🆕 Manage context
+    manage_context_if_needed()
+
+    conversation_history.append({"role": "user", "content": user_message})
+
+    if not current_provider.supports_tools:
+        console.print(
+            f"[red]❌ Provider {current_provider.provider_name} không support tools.[/red]"
+        )
+        console.print("[dim]Switch sang Anthropic: /provider claude-sonnet[/dim]")
+        if conversation_history and conversation_history[-1]["role"] == "user":
+            conversation_history.pop()
+        return
+
+    anthropic_client = current_provider.get_raw_client()
 
     for iteration in range(max_iterations):
-        # Check provider support tool use không
-        if not current_provider.supports_tools:
-            console.print(
-                f"[red]❌ Provider {current_provider.provider_name} không support tools.[/red]"
+        try:
+            response = anthropic_client.messages.create(
+                model=current_provider.model_name,
+                max_tokens=4096,
+                system=MODE_PROMPTS["agent"],
+                tools=TOOLS_SCHEMA,
+                messages=conversation_history,
             )
-            console.print("[dim]Switch sang Anthropic: /provider claude-sonnet[/dim]")
+        except Exception as e:
+            parsed = parse_provider_error(e)
+            console.print(f"\n[red]❌ {parsed.user_message}[/red]")
+            console.print(f"[yellow]💡 {parsed.suggestion}[/yellow]")
+            # Rollback nếu iteration đầu
+            if (
+                iteration == 0
+                and conversation_history
+                and conversation_history[-1]["role"] == "user"
+            ):
+                conversation_history.pop()
             return
 
-        # Dùng raw Anthropic client từ provider
-        anthropic_client = current_provider.get_raw_client()
-
-        response = anthropic_client.messages.create(
-            model=current_provider.model_name,
-            max_tokens=4096,
-            system=MODE_PROMPTS["agent"],
-            tools=TOOLS_SCHEMA,
-            messages=conversation_history,
-        )
-
-        # Update token counter
+        # ... (giữ nguyên phần xử lý response phía sau)
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
 
-        # In token info
         cost = calculate_cost(response.usage.input_tokens, response.usage.output_tokens)
         console.print(
             f"[dim]📊 Iter {iteration + 1}: "
@@ -145,15 +196,8 @@ def agent_loop(user_message: str, max_iterations: int = 10):
             f"{response.usage.output_tokens} out = ${cost:.6f}[/dim]"
         )
 
-        # Lưu assistant response vào history
-        conversation_history.append(
-            {
-                "role": "assistant",
-                "content": response.content,
-            }
-        )
+        conversation_history.append({"role": "assistant", "content": response.content})
 
-        # Phân tích content blocks
         tool_uses = []
         text_parts = []
 
@@ -163,26 +207,24 @@ def agent_loop(user_message: str, max_iterations: int = 10):
             elif block.type == "tool_use":
                 tool_uses.append(block)
 
-        # In text response (nếu có)
         if text_parts:
             text = "\n".join(text_parts)
             console.print(f"[cyan]{text}[/cyan]")
 
-        # Nếu LLM không gọi tool nào → đã xong
         if response.stop_reason == "end_turn" or not tool_uses:
             return
 
-        # Execute từng tool và collect results
         tool_results = []
         for tool_use in tool_uses:
             tool_name = tool_use.name
             tool_input = tool_use.input
-
             console.print(f"\n[yellow]🔧 Tool call: {tool_name}({tool_input})[/yellow]")
 
-            result = execute_tool(tool_name, tool_input)
+            try:
+                result = execute_tool(tool_name, tool_input)
+            except Exception as e:
+                result = f"❌ Tool error: {e}"
 
-            # In preview kết quả (rút gọn)
             preview = result[:200] + "..." if len(result) > 200 else result
             console.print(f"[dim]{preview}[/dim]")
 
@@ -194,13 +236,7 @@ def agent_loop(user_message: str, max_iterations: int = 10):
                 }
             )
 
-        # Gửi tool results về LLM trong lần loop tiếp theo
-        conversation_history.append(
-            {
-                "role": "user",
-                "content": tool_results,
-            }
-        )
+        conversation_history.append({"role": "user", "content": tool_results})
 
     console.print(
         f"[red]⚠️  Đạt max iterations ({max_iterations}), dừng agent loop[/red]"
@@ -265,6 +301,60 @@ def structured_code_review(file_pattern: str):
         # Pydantic có method tự dump JSON
         json.dump(report.model_dump(), f, ensure_ascii=False, indent=2, default=str)
     console.print(f"[green]💾 Đã lưu báo cáo vào {output_file}[/green]")
+
+
+def manage_context_if_needed():
+    """Check & manage context trước khi gửi request."""
+    global conversation_history
+
+    if CONTEXT_STRATEGY == "off":
+        return
+
+    current_tokens = total_tokens(conversation_history)
+
+    if current_tokens <= MAX_CONTEXT_TOKENS:
+        return
+
+    console.print(
+        f"\n[yellow]⚠️  Context lớn ({current_tokens:,} tokens), "
+        f"đang {CONTEXT_STRATEGY}...[/yellow]"
+    )
+
+    if CONTEXT_STRATEGY == "sliding":
+        conversation_history = trim_history_sliding(
+            conversation_history,
+            max_tokens=MAX_CONTEXT_TOKENS,
+            keep_recent=KEEP_RECENT_MESSAGES,
+        )
+    elif CONTEXT_STRATEGY == "summarize":
+
+        def summarize_fn(text: str) -> str:
+            result = current_provider.chat(
+                messages=[{"role": "user", "content": f"Conversation:\n\n{text}"}],
+                system=SUMMARIZE_PROMPT,
+                max_tokens=500,
+            )
+            return result.text
+
+        try:
+            conversation_history = summarize_history(
+                conversation_history,
+                summarize_fn=summarize_fn,
+                keep_recent=KEEP_RECENT_MESSAGES,
+            )
+        except Exception as e:
+            console.print(f"[red]❌ Summarize fail, fallback sang sliding: {e}[/red]")
+            conversation_history = trim_history_sliding(
+                conversation_history,
+                max_tokens=MAX_CONTEXT_TOKENS,
+                keep_recent=KEEP_RECENT_MESSAGES,
+            )
+
+    new_tokens = total_tokens(conversation_history)
+    console.print(
+        f"[green]✅ Còn {new_tokens:,} tokens "
+        f"({len(conversation_history)} messages)[/green]"
+    )
 
 
 def display_review_report(report: CodeReviewReport):
@@ -464,6 +554,9 @@ def show_help():
     table.add_row("/clear", "Xóa lịch sử")
     table.add_row("/stats", "Token usage & cost")
     table.add_row("/help", "Hiện bảng này")
+    table.add_row("/context", "Xem thông tin context hiện tại")
+    table.add_row("/strategy <mode>", "Strategy: summarize|sliding|off")
+    table.add_row("/fallback on|off", "Tự switch provider khi lỗi")
     table.add_row("/quit", "Thoát")
 
     console.print(table)
@@ -481,7 +574,7 @@ def show_help():
 # MAIN LOOP
 # ============================================================
 def main():
-    global current_provider, current_mode
+    global current_provider, current_mode, ENABLE_FALLBACK, CONTEXT_STRATEGY
     console.print(
         Panel.fit(
             "[bold cyan]🤖 DevMate AI v2.0[/bold cyan]\n"
@@ -556,6 +649,50 @@ def main():
                         )
                     except ValueError as e:
                         console.print(f"[red]❌ {e}[/red]")
+            elif cmd == "/context":
+                current_tokens = total_tokens(conversation_history)
+                pct = (
+                    (current_tokens / MAX_CONTEXT_TOKENS * 100)
+                    if MAX_CONTEXT_TOKENS > 0
+                    else 0
+                )
+                console.print(f"\n[bold]📊 Context Info:[/bold]")
+                console.print(f"  Messages: {len(conversation_history)}")
+                console.print(
+                    f"  Tokens (estimated): {current_tokens:,} / {MAX_CONTEXT_TOKENS:,} ({pct:.1f}%)"
+                )
+                console.print(f"  Strategy: [cyan]{CONTEXT_STRATEGY}[/cyan]")
+                console.print(f"  Keep recent: {KEEP_RECENT_MESSAGES} messages")
+
+            elif cmd == "/strategy":
+                if not arg or arg not in ["summarize", "sliding", "off"]:
+                    console.print("[red]Usage: /strategy <summarize|sliding|off>[/red]")
+                    console.print(
+                        "[dim]  summarize - tóm tắt phần cũ (tốn 1 API call)[/dim]"
+                    )
+                    console.print(
+                        "[dim]  sliding   - chỉ giữ N messages cuối (free)[/dim]"
+                    )
+                    console.print("[dim]  off       - không quản lý context[/dim]")
+                else:
+                    CONTEXT_STRATEGY = arg
+                    console.print(f"[green]✅ Context strategy: {arg}[/green]")
+
+            elif cmd == "/fallback":
+                if not arg:
+                    console.print(
+                        f"\n[bold]Fallback hiện tại:[/bold] {'ON' if ENABLE_FALLBACK else 'OFF'}"
+                    )
+                    console.print("[dim]Usage: /fallback on|off[/dim]")
+                elif arg.lower() in ["on", "true", "1"]:
+                    ENABLE_FALLBACK = True
+                    console.print(
+                        "[green]✅ Fallback ON - tự switch provider khi lỗi[/green]"
+                    )
+                elif arg.lower() in ["off", "false", "0"]:
+                    ENABLE_FALLBACK = False
+                    console.print("[yellow]⚠️  Fallback OFF[/yellow]")
+
             # Xử lý mode commands — có thể kèm file path
             elif user_input.startswith(
                 ("/code", "/test", "/explain", "/chat", "/agent")
