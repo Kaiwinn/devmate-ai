@@ -4,12 +4,14 @@
 from providers.anthropic_provider import AnthropicProvider
 from providers.base import CompletionResult, LLMProvider, TokenUsage
 from providers.gemini_provider import GeminiProvider
+from providers.groq_provider import GroqProvider
 from providers.openai_provider import OpenAIProvider
 
 PROVIDERS = {
     "anthropic": AnthropicProvider,
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "groq": GroqProvider,
 }
 
 # Preset cho các models hay dùng
@@ -26,6 +28,10 @@ PRESETS = {
     "gemini-3.5-flash": ("gemini", "gemini-3.5-flash"),
     "gemini-3-flash": ("gemini", "gemini-3-flash-preview"),
     "gemini-2.5-flash": ("gemini", "gemini-2.5-flash"),
+    # Groq - FREE, super fast
+    "groq-llama": ("groq", "llama-3.3-70b-versatile"),
+    "groq-llama-fast": ("groq", "llama-3.1-8b-instant"),
+    "groq-mixtral": ("groq", "mixtral-8x7b-32768"),
 }
 
 
