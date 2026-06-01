@@ -4,7 +4,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
@@ -15,6 +14,7 @@ from file_handler import read_files_for_review
 from tools import TOOLS_SCHEMA, execute_tool
 from schemas import CodeReviewReport
 from structured_output import call_with_schema
+from providers import LLMProvider, PRESETS, create_provider
 
 from prompts import (
     CHAT_PROMPT,
@@ -29,12 +29,10 @@ from prompts import (
 # CONFIG
 # ============================================================
 load_dotenv()
-client = Anthropic()
 console = Console()
 
-# Giá Sonnet 4.5: $3/1M input tokens, $15/1M output tokens
-PRICE_INPUT_PER_MTOK = 3.0
-PRICE_OUTPUT_PER_MTOK = 15.0
+# Giá Sonnet 4.5 (giả định, cập nhật theo thực tế)
+current_provider: LLMProvider = create_provider("claude-sonnet")
 
 # Folder lưu chat history
 DATA_DIR = Path("data")
@@ -62,59 +60,35 @@ MODE_PROMPTS = {
 # CORE: chat function
 # ============================================================
 def chat_stream(user_message: str) -> str:
-    """
-    Stream response từ Claude.
-    - Append user message vào history
-    - Gọi API với system prompt theo mode hiện tại
-    - Stream từng chunk ra terminal
-    - Append response vào history
-    - Update token counter
-    """
+    """Stream response từ current provider."""
     global total_input_tokens, total_output_tokens
 
-    conversation_history.append(
-        {
-            "role": "user",
-            "content": user_message,
-        }
-    )
+    conversation_history.append({"role": "user", "content": user_message})
 
     full_response = ""
 
-    # Stream response
-    with client.messages.stream(
-        model="claude-sonnet-4-5",
-        max_tokens=2048,
-        system=MODE_PROMPTS[current_mode],
+    # Dùng provider abstract — không quan trọng là Claude/GPT/Gemini
+    for text in current_provider.chat_stream(
         messages=conversation_history,
-    ) as stream:
-        for text in stream.text_stream:
-            console.print(text, end="", style="cyan")
-            full_response += text
-
-        # Sau khi stream xong, lấy final message để biết usage
-        final_message = stream.get_final_message()
+        system=MODE_PROMPTS[current_mode],
+        max_tokens=2048,
+    ):
+        console.print(text, end="", style="cyan")
+        full_response += text
 
     console.print()  # newline
 
-    # Lưu vào history
-    conversation_history.append(
-        {
-            "role": "assistant",
-            "content": full_response,
-        }
-    )
+    conversation_history.append({"role": "assistant", "content": full_response})
 
-    # Update token counter
-    input_tokens = final_message.usage.input_tokens
-    output_tokens = final_message.usage.output_tokens
-    total_input_tokens += input_tokens
-    total_output_tokens += output_tokens
+    # Lấy usage sau stream
+    usage = current_provider.get_last_usage()
+    total_input_tokens += usage.input_tokens
+    total_output_tokens += usage.output_tokens
 
-    # In ra cost của câu này
-    cost = calculate_cost(input_tokens, output_tokens)
+    cost = current_provider.calculate_cost(usage)
     console.print(
-        f"[dim]📊 {input_tokens} in + {output_tokens} out = ${cost:.6f}[/dim]"
+        f"[dim]📊 [{current_provider.provider_name}] "
+        f"{usage.input_tokens} in + {usage.output_tokens} out = ${cost:.6f}[/dim]"
     )
 
     return full_response
@@ -140,9 +114,19 @@ def agent_loop(user_message: str, max_iterations: int = 10):
     )
 
     for iteration in range(max_iterations):
-        # Gọi API với tools enabled
-        response = client.messages.create(
-            model="claude-sonnet-4-5",
+        # Check provider support tool use không
+        if not current_provider.supports_tools:
+            console.print(
+                f"[red]❌ Provider {current_provider.provider_name} không support tools.[/red]"
+            )
+            console.print("[dim]Switch sang Anthropic: /provider claude-sonnet[/dim]")
+            return
+
+        # Dùng raw Anthropic client từ provider
+        anthropic_client = current_provider.get_raw_client()
+
+        response = anthropic_client.messages.create(
+            model=current_provider.model_name,
             max_tokens=4096,
             system=MODE_PROMPTS["agent"],
             tools=TOOLS_SCHEMA,
@@ -239,10 +223,21 @@ def structured_code_review(file_pattern: str):
         "\n[bold magenta]🔍 DevMate đang review (structured)...[/bold magenta]"
     )
 
+    # Check provider support structured output
+    if not current_provider.supports_structured_output:
+        console.print(
+            f"[red]❌ Provider {current_provider.provider_name} không support structured output.[/red]"
+        )
+        console.print("[dim]Switch sang Anthropic: /provider claude-sonnet[/dim]")
+        return
+
+    # Lấy raw Anthropic client từ provider
+    anthropic_client = current_provider.get_raw_client()
+
     # Gọi LLM với schema
     report, usage = call_with_schema(
-        client=client,
-        model="claude-sonnet-4-5",
+        client=anthropic_client,
+        model=current_provider.model_name,
         system_prompt=STRUCTURED_REVIEW_PROMPT,
         user_message=f"Review code sau:\n\n{file_content}",
         schema=CodeReviewReport,
@@ -329,10 +324,12 @@ def display_review_report(report: CodeReviewReport):
 # UTILITIES
 # ============================================================
 def calculate_cost(input_tokens: int, output_tokens: int) -> float:
-    """Tính chi phí USD dựa trên giá Sonnet 4.5."""
-    input_cost = (input_tokens / 1_000_000) * PRICE_INPUT_PER_MTOK
-    output_cost = (output_tokens / 1_000_000) * PRICE_OUTPUT_PER_MTOK
-    return input_cost + output_cost
+    """Tính chi phí qua provider hiện tại."""
+    from providers.base import TokenUsage
+
+    return current_provider.calculate_cost(
+        TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    )
 
 
 def show_stats():
@@ -458,6 +455,7 @@ def show_help():
     )
     table.add_row("[bold]/test <file>[/bold]", "Sinh unit test cho file")
     table.add_row("[bold]/explain <file>[/bold]", "Giải thích code trong file")
+    table.add_row("/provider [name]", "Switch LLM provider (claude/gpt/gemini)")
     table.add_row("/chat", "Quay về chat thường")
 
     table.add_section()
@@ -483,6 +481,7 @@ def show_help():
 # MAIN LOOP
 # ============================================================
 def main():
+    global current_provider, current_mode
     console.print(
         Panel.fit(
             "[bold cyan]🤖 DevMate AI v2.0[/bold cyan]\n"
@@ -515,7 +514,9 @@ def main():
 
         # Xử lý commands (bắt đầu bằng /)
         if user_input.startswith("/"):
-            cmd = user_input.lower()
+            parts = user_input.split(maxsplit=1)
+            cmd = parts[0].lower()
+            arg = parts[1] if len(parts) > 1 else None
 
             if cmd in ["/quit", "/exit", "/q"]:
                 show_stats()
@@ -532,6 +533,29 @@ def main():
                 save_chat()
             elif cmd == "/load":
                 load_chat()
+            elif cmd == "/provider":
+                if not arg:
+                    # List available providers
+                    console.print("\n[bold]Available providers:[/bold]")
+                    for preset in PRESETS:
+                        marker = (
+                            " ← current"
+                            if PRESETS[preset][1] == current_provider.model_name
+                            else ""
+                        )
+                        console.print(f"  • {preset}{marker}")
+                    console.print(f"\n[dim]Usage: /provider <preset>[/dim]")
+                    console.print(
+                        f"[dim]Hiện tại: {current_provider.provider_name}/{current_provider.model_name}[/dim]"
+                    )
+                else:
+                    try:
+                        current_provider = create_provider(arg)
+                        console.print(
+                            f"[green]✅ Đã switch sang {current_provider.provider_name}/{current_provider.model_name}[/green]"
+                        )
+                    except ValueError as e:
+                        console.print(f"[red]❌ {e}[/red]")
             # Xử lý mode commands — có thể kèm file path
             elif user_input.startswith(
                 ("/code", "/test", "/explain", "/chat", "/agent")
