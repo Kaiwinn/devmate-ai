@@ -1,0 +1,17 @@
+# Core LLM providers
+anthropic==0.105.2
+openai==2.38.0
+groq==1.4.0
+google-genai==2.7.0
+
+# Observability (Bước 6)
+langfuse==4.7.1
+
+# Structured output & validation
+pydantic==2.13.4
+
+# CLI & utilities
+rich==15.0.0
+python-dotenv==1.2.2
+PyYAML==6.0.3
+requests==2.34.2

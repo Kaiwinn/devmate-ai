@@ -1,12 +1,14 @@
 # 🤖 DevMate AI
 
-> **AI Engineering project** — Trợ lý lập trình production-grade với multi-provider, agent loop, structured output, eval system, và resilience layer.
+> **AI Engineering project** — Trợ lý lập trình production-grade với multi-provider, agent loop, structured output, eval system, resilience layer, và observability.
 
-# RUN
+```bash
 python devmate.py
+```
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![Claude](https://img.shields.io/badge/Claude-Sonnet%204.5-purple.svg)](https://www.anthropic.com/)
+[![Langfuse](https://img.shields.io/badge/Observability-Langfuse-orange.svg)](https://langfuse.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ![Demo Main](./docs/images/demo-main.png)
@@ -24,6 +26,7 @@ python devmate.py
 - ✅ **Resilience Layer** — retry với exponential backoff, auto-fallback giữa providers
 - ✅ **Smart Context Management** — sliding window + auto-summarize cho long conversations
 - ✅ **Eval Suite** — LLM-as-judge với 10+ test cases, HTML report so sánh providers
+- ✅ **Observability** — Langfuse tracing: mỗi LLM call được trace với cost, latency, token
 - ✅ **Cost Tracking** — track token usage và cost real-time mỗi request
 
 ---
@@ -45,15 +48,14 @@ python devmate.py
 
 Agent tự khám phá codebase, không cần user chỉ định file:
 
-🤖 Bạn: Project có chỗ nào dùng MD5 không?
+```
+🤖 Bạn: /agent Project có chỗ nào dùng MD5 không?
 🔧 Tool call: search_in_code({'pattern': 'md5'})
 🔍 Kết quả: test_code/auth.py:12: hashed = hashlib.md5(...)
 🔧 Tool call: read_file({'path': 'test_code/auth.py'})
-📄 [reading file content...]
 → Có 1 chỗ dùng MD5 ở auth.py line 12.
-MD5 không an toàn cho password vì: (1) fast hash dễ brute-force,
-(2) đã có collision attacks, (3) thiếu salt mặc định.
-Đề xuất: dùng bcrypt hoặc argon2.
+   MD5 không an toàn cho password — đề xuất dùng bcrypt hoặc argon2.
+```
 
 ![Agent Demo](./docs/images/demo-agent.png)
 <!-- 📸 PASTE ẢNH: Output /agent với các tool calls hiển thị -->
@@ -61,36 +63,56 @@ MD5 không an toàn cho password vì: (1) fast hash dễ brute-force,
 ### 📊 Structured Code Review
 
 Output JSON validated với Pydantic schema, lưu file để dùng pipeline khác:
+
+```
 💬 Bạn: /review test_code/auth.py
 📊 Code Review Report
-Score: 2/10
-Total Issues: 7
-🐛 Issues:
-#1 [CRITICAL] SQL Injection vulnerability
-📁 test_code/auth.py:5
-💡 Why: Attacker có thể inject SQL...
-✨ Fix: dùng parameterized query
-...
+Score: 2/10 | Total Issues: 7
+🐛 #1 [CRITICAL] SQL Injection vulnerability
+   📁 test_code/auth.py:5
+   💡 Why: Attacker có thể inject SQL...
+   ✨ Fix: dùng parameterized query
 💾 Đã lưu report vào data/review_20260601_111821.json
+```
+
 ![Structured Review](./docs/images/demo-review.png)
 <!-- 📸 PASTE ẢNH: Output /review với panel báo cáo + issues -->
 
+### 🔭 Observability với Langfuse
+
+Mọi LLM call đều được trace tự động — xem được cost, latency, input/output trên dashboard:
+
+```
+📊 [anthropic] 196 in + 738 out = $0.011658
+Session: 4943e43b  ← link thẳng vào Langfuse trace
+```
+
+![Langfuse Dashboard](./docs/images/demo-langfuse.png)
+<!-- 📸 PASTE ẢNH: Screenshot Langfuse dashboard với traces từ DevMate -->
+
+**Những gì được trace:**
+- Input messages (toàn bộ conversation history)
+- Output của model
+- Token count (input + output)
+- Cost tính theo USD
+- Provider, model name, mode (chat/code/agent...)
+- Session grouping — thấy toàn bộ 1 lần dùng CLI
+
 ### 🛡️ Resilience: Auto Fallback
 
-Khi provider chính lỗi (rate limit, quota exceeded, server overload), DevMate tự switch sang provider backup:
+```
 💬 Bạn: /fallback on
 ✅ Fallback ON
 💬 Bạn: hello
 ⚠️  openai fail: Hết quota
 🔄 Thử fallback: anthropic/claude-sonnet-4-5
 ✅ Fallback thành công với anthropic
-[Claude trả lời, app không crash]
+```
+
 ### 🧪 Eval Suite (LLM-as-Judge)
 
-Đánh giá quality tự động với LLM-as-judge, compare giữa nhiều providers:
-
 ```bash
-python run_evals.py --providers claude-sonnet claude-haiku groq-llama
+python run_evals.py --providers groq-llama claude-haiku claude-sonnet
 ```
 
 Output: terminal table + HTML report với cards summary, chi tiết từng test case.
@@ -98,9 +120,14 @@ Output: terminal table + HTML report với cards summary, chi tiết từng test
 ![Eval Report](./docs/images/demo-eval.png)
 <!-- 📸 PASTE ẢNH: HTML eval report -->
 
+![Eval Terminal](./docs/images/demo-eval-terminal.png)
+<!-- 📸 PASTE ẢNH: Terminal khi chạy eval xong, có bảng summary -->
+
 ---
 
 ## 🏗️ Architecture
+
+```
 devmate-ai/
 ├── devmate.py                  # Main entry, CLI loop
 ├── prompts.py                  # System prompts cho mỗi mode
@@ -108,6 +135,7 @@ devmate-ai/
 ├── tools.py                    # Tools cho agent (read_file, grep, ...)
 ├── file_handler.py             # Đọc file/folder, glob pattern
 ├── structured_output.py        # Helper gọi LLM với schema
+├── observability.py            # Langfuse tracing — mọi LLM call
 ├── context_manager.py          # Sliding window + auto-summarize
 ├── error_handler.py            # Phân loại 7 loại error
 ├── retry_helper.py             # Exponential backoff retry
@@ -127,6 +155,8 @@ devmate-ai/
 │   └── reports/                # Output reports
 │
 └── data/                       # Chat history, review reports
+```
+
 ![Architecture Diagram](./docs/images/architecture.png)
 <!-- 📸 PASTE ẢNH: Sơ đồ kiến trúc -->
 
@@ -140,6 +170,7 @@ devmate-ai/
 | **Chain of Responsibility** | Fallback chain |
 | **Adapter Pattern** | Convert message format giữa providers |
 | **Defensive Programming** | Try-except + graceful degradation |
+| **Graceful Degradation** | Langfuse key chưa set → app vẫn chạy |
 
 ---
 
@@ -165,14 +196,12 @@ source venv/bin/activate  # Mac/Linux
 # Dependencies
 pip install -r requirements.txt
 
-# API keys
-cp .env.example .env
-# Edit .env với keys của bạn
+# API keys — tạo file .env và điền keys
 ```
 
 ### Required API Keys
 
-Thêm vào `.env`:
+Tạo file `.env` và thêm vào:
 
 ```bash
 # Anthropic (có $5 free credit cho account mới)
@@ -186,6 +215,10 @@ OPENAI_API_KEY=sk-proj-xxx
 
 # Google Gemini (FREE limited - optional)
 GOOGLE_API_KEY=AIzaSy-xxx
+
+# Langfuse Observability (FREE tier tại cloud.langfuse.com - optional)
+LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+LANGFUSE_SECRET_KEY=sk-lf-xxx
 ```
 
 Lấy keys tại:
@@ -193,6 +226,7 @@ Lấy keys tại:
 - [Groq Console](https://console.groq.com) — Free Llama
 - [OpenAI Platform](https://platform.openai.com) — GPT
 - [Google AI Studio](https://aistudio.google.com/apikey) — Gemini
+- [Langfuse Cloud](https://cloud.langfuse.com) — Observability (free)
 
 ### Run
 
@@ -250,11 +284,11 @@ python devmate.py
 | Provider | Models | Free Tier | Tool Use | Structured Output | Notes |
 |----------|--------|-----------|----------|-------------------|-------|
 | **Anthropic** | Sonnet 4.5, Haiku 4.5 | $5 free | ✅ | ✅ | Best for code |
-| **OpenAI** | GPT-4o, GPT-4o-mini | ❌ Phải nạp $5 | ❌* | ❌* | Standard |
-| **Groq** | Llama 3.3 70B, Mixtral | ✅ Unlimited | ❌* | ❌* | **Siêu nhanh** |
-| **Gemini** | Flash variants | ✅ Limited | ❌* | ❌* | Quota biến động |
+| **OpenAI** | GPT-4o, GPT-4o-mini | ❌ Phải nạp $5 | ❌ | ❌ | Standard |
+| **Groq** | Llama 3.3 70B, Mixtral | ✅ Unlimited | ❌ | ❌ | **Siêu nhanh** |
+| **Gemini** | Flash variants | ✅ Limited | ❌ | ❌ | Quota biến động |
 
-*\* Có thể implement sau, hiện tại Tool Use & Structured Output chỉ Anthropic*
+*Tool Use & Structured Output hiện chỉ Anthropic*
 
 ---
 
@@ -268,29 +302,22 @@ python run_evals.py --providers groq-llama
 python run_evals.py --providers groq-llama claude-haiku claude-sonnet
 ```
 
-Bạn sẽ thấy:
-- ✅ Progress bar realtime
-- ✅ Summary table với pass rate, avg score, latency, cost
-- ✅ HTML report tự mở browser với chi tiết từng test
-- ✅ JSON export để dùng trong CI/CD
-
-![Eval Terminal](./docs/images/demo-eval-terminal.png)
-<!-- 📸 PASTE ẢNH: Terminal khi chạy eval xong, có bảng summary -->
-
 ---
 
 ## 💰 Cost Tracking
 
 Token usage và cost được track real-time:
+
+```
 📊 [anthropic] 245 in + 678 out = $0.010917
-📊 [groq] 245 in + 678 out = $0.000000   ← FREE!
-Production pattern: **dùng Groq cho 90% tasks (free), Claude cho 10% critical tasks (paid)** → tiết kiệm chi phí 90% vs all-Claude.
+📊 [groq]      245 in + 678 out = $0.000000   ← FREE!
+```
+
+Production pattern: **dùng Groq cho 90% tasks (free), Claude cho 10% critical tasks (paid)** → tiết kiệm 90% chi phí vs all-Claude.
 
 ---
 
 ## 🛡️ Resilience Features
-
-DevMate có khả năng tự phục hồi khi gặp lỗi API:
 
 | Feature | Mô tả |
 |---------|-------|
@@ -304,28 +331,23 @@ DevMate có khả năng tự phục hồi khi gặp lỗi API:
 
 ## 🛣️ Roadmap
 
-- [x] Multi-mode chat (chat/code/test/explain/review/agent)
-- [x] Multi-provider abstraction (Claude/GPT/Groq/Gemini)
-- [x] Autonomous agent với tool use
-- [x] Structured output với Pydantic
-- [x] Resilience layer (retry + fallback)
-- [x] Smart context management
-- [x] Eval suite với LLM-as-judge
-- [ ] Observability với Langfuse
-- [ ] RAG: Chat với codebase 1000+ files
-- [ ] Multi-agent chain (planner → coder → reviewer)
-- [ ] Web UI với Next.js + FastAPI
-- [ ] Deploy với Docker + cloud
+- [x] **Bậc 1-2** — Multi-mode chat + Structured Output
+- [x] **Bậc 3** — Multi-provider abstraction (Claude/GPT/Groq/Gemini)
+- [x] **Bậc 4** — Resilience layer (retry + fallback + context management)
+- [x] **Bậc 5** — Eval suite với LLM-as-judge
+- [x] **Bậc 6** — Observability với Langfuse (trace mọi LLM call)
+- [ ] **Bậc 7** — Advanced RAG (hybrid search + re-ranking + doc index)
+- [ ] **Bậc 8** — Multi-Agent với LangGraph (planner → coder → reviewer)
 
 ---
 
 ## 📊 Tech Stack
 
 - **LLM:** Claude Sonnet 4.5, GPT-4o-mini, Llama 3.3 70B (Groq), Gemini Flash
-- **CLI:** [Rich](https://github.com/Textualize/rich) (panels, tables, syntax highlighting)
-- **Validation:** [Pydantic v2](https://docs.pydantic.dev)
+- **Observability:** [Langfuse](https://langfuse.com/) — trace, cost, latency dashboard
+- **CLI:** [Rich](https://github.com/Textualize/rich) — panels, tables, syntax highlighting
+- **Validation:** [Pydantic v2](https://docs.pydantic.dev) — structured output, type safety
 - **Eval:** Custom LLM-as-judge với YAML test datasets
-- **Tools:** subprocess + Python stdlib
 
 ---
 
@@ -342,7 +364,7 @@ Build project này, mình thực hành các skills của một AI Engineer:
 7. **Context Management** — sliding window vs summarization trade-off
 8. **LLM Evaluation** — LLM-as-judge, automated test suite, A/B compare
 9. **Cost Optimization** — cheap inference + smart judge pattern
-10. **Production Patterns** — defensive programming, observability mindset
+10. **Observability** — Langfuse tracing, trace/generation hierarchy, graceful degradation
 
 ---
 
@@ -356,6 +378,7 @@ MIT License — feel free to fork và customize.
 
 - [Anthropic Claude](https://www.anthropic.com) — primary LLM
 - [Groq](https://groq.com) — free fast Llama inference
+- [Langfuse](https://langfuse.com) — LLM observability
 - [Rich](https://github.com/Textualize/rich) — beautiful CLI
 - Inspired by [Cursor](https://cursor.sh), [Claude Code](https://www.anthropic.com/claude-code), [Aider](https://aider.chat)
 

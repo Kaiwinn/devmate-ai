@@ -25,6 +25,7 @@ from context_manager import (
 from error_handler import parse_provider_error
 from retry_helper import retry_with_backoff
 from fallback_chain import try_with_fallback
+from observability import start_session, log_generation, flush
 
 from prompts import (
     CHAT_PROMPT,
@@ -129,6 +130,19 @@ def chat_stream(user_message: str) -> str:
         console.print(
             f"[dim]📊 [{current_provider.provider_name}] "
             f"{usage.input_tokens} in + {usage.output_tokens} out = ${cost:.6f}[/dim]"
+        )
+
+        # Log mỗi LLM call vào Langfuse trace
+        log_generation(
+            name=f"chat:{current_mode}",
+            model=current_provider.model_name,
+            provider=current_provider.provider_name,
+            mode=current_mode,
+            input_messages=conversation_history[:-1],  # Exclude response vừa thêm
+            output=full_response,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cost_usd=cost,
         )
 
         return full_response
@@ -575,11 +589,15 @@ def show_help():
 # ============================================================
 def main():
     global current_provider, current_mode, ENABLE_FALLBACK, CONTEXT_STRATEGY
+
+    # Bắt đầu Langfuse trace cho session này (nếu LANGFUSE keys đã set)
+    session_id = start_session("devmate-cli")
+
     console.print(
         Panel.fit(
             "[bold cyan]🤖 DevMate AI v2.0[/bold cyan]\n"
             "Trợ lý lập trình đa năng\n"
-            "[dim]Gõ /help để xem commands[/dim]",
+            f"[dim]Session: {session_id} | Gõ /help để xem commands[/dim]",
             border_style="cyan",
         )
     )
@@ -613,6 +631,7 @@ def main():
 
             if cmd in ["/quit", "/exit", "/q"]:
                 show_stats()
+                flush()  # Flush Langfuse events trước khi thoát
                 console.print("[yellow]Tạm biệt! 👋[/yellow]")
                 break
             elif cmd == "/clear":
