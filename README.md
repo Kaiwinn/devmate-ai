@@ -11,8 +11,7 @@ python devmate.py
 [![Langfuse](https://img.shields.io/badge/Observability-Langfuse-orange.svg)](https://langfuse.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![Demo Main](./docs/images/demo-main.png)
-<!-- 📸 PASTE ẢNH: Banner DevMate khi khởi động + 1 cuộc chat mẫu -->
+![Demo-Main](image.png)
 
 ---
 
@@ -57,8 +56,7 @@ Agent tự khám phá codebase, không cần user chỉ định file:
    MD5 không an toàn cho password — đề xuất dùng bcrypt hoặc argon2.
 ```
 
-![Agent Demo](./docs/images/demo-agent.png)
-<!-- 📸 PASTE ẢNH: Output /agent với các tool calls hiển thị -->
+![Agent Demo](image-2.png)
 
 ### 📊 Structured Code Review
 
@@ -75,8 +73,7 @@ Score: 2/10 | Total Issues: 7
 💾 Đã lưu report vào data/review_20260601_111821.json
 ```
 
-![Structured Review](./docs/images/demo-review.png)
-<!-- 📸 PASTE ẢNH: Output /review với panel báo cáo + issues -->
+![Structured Review](image-3.png)
 
 ### 🔭 Observability với Langfuse
 
@@ -87,8 +84,7 @@ Mọi LLM call đều được trace tự động — xem được cost, latency
 Session: 4943e43b  ← link thẳng vào Langfuse trace
 ```
 
-![Langfuse Dashboard](./docs/images/demo-langfuse.png)
-<!-- 📸 PASTE ẢNH: Screenshot Langfuse dashboard với traces từ DevMate -->
+![Langfuse Dashboard](image-4.png)
 
 **Những gì được trace:**
 - Input messages (toàn bộ conversation history)
@@ -117,11 +113,7 @@ python run_evals.py --providers groq-llama claude-haiku claude-sonnet
 
 Output: terminal table + HTML report với cards summary, chi tiết từng test case.
 
-![Eval Report](./docs/images/demo-eval.png)
-<!-- 📸 PASTE ẢNH: HTML eval report -->
-
-![Eval Terminal](./docs/images/demo-eval-terminal.png)
-<!-- 📸 PASTE ẢNH: Terminal khi chạy eval xong, có bảng summary -->
+![Eval Report](image-5.png)
 
 ---
 
@@ -157,8 +149,7 @@ devmate-ai/
 └── data/                       # Chat history, review reports
 ```
 
-![Architecture Diagram](./docs/images/architecture.png)
-<!-- 📸 PASTE ẢNH: Sơ đồ kiến trúc -->
+![Architecture Diagram](image-1.png)
 
 ### 🎨 Design Patterns Used
 
