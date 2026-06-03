@@ -26,6 +26,8 @@ python devmate.py
 - ✅ **Smart Context Management** — sliding window + auto-summarize cho long conversations
 - ✅ **Eval Suite** — LLM-as-judge với 10+ test cases, HTML report so sánh providers
 - ✅ **Observability** — Langfuse tracing: mỗi LLM call được trace với cost, latency, token
+- ✅ **Advanced RAG** — hybrid search (semantic + BM25) + cross-encoder rerank, hỏi về codebase
+- ✅ **Multi-Agent LangGraph** — planner → coder → reviewer với self-correction loop
 - ✅ **Cost Tracking** — track token usage và cost real-time mỗi request
 
 ---
@@ -42,6 +44,9 @@ python devmate.py
 | `/explain <file>` | Giải thích code chi tiết |
 | `/review <file>` | Structured review với Pydantic schema |
 | `/agent <task>` | Autonomous agent với tool use |
+| `/rag index` | Index codebase vào vector DB |
+| `/rag <câu hỏi>` | Hỏi về codebase — hybrid search + rerank |
+| `/chain <task>` | Multi-agent: planner → coder → reviewer |
 
 ### 🤖 Autonomous Agent với Tool Use
 
@@ -94,6 +99,43 @@ Session: 4943e43b  ← link thẳng vào Langfuse trace
 - Provider, model name, mode (chat/code/agent...)
 - Session grouping — thấy toàn bộ 1 lần dùng CLI
 
+### 🔍 Advanced RAG — Hỏi về codebase
+
+```
+💬 Bạn: /rag index                     ← index codebase lần đầu
+💬 Bạn: /rag fallback chain hoạt động thế nào?
+
+🔍 RAG (anthropic):
+Dựa vào fallback_chain.py | try_with_fallback | line 22:
+1. Thử provider chính trước
+2. Nếu lỗi và can_fallback=True → lần lượt thử fallback_chain
+3. Skip provider trùng tên (đã thử)
+4. Tất cả fail → raise Exception
+```
+
+Pipeline: semantic search (ChromaDB) + BM25 keyword → RRF merge → cross-encoder rerank → top-5 → LLM
+
+### 🔗 Multi-Agent LangGraph — Self-correction loop
+
+3 agents chạy theo state machine, reviewer fail → coder tự sửa không cần user can thiệp:
+
+```
+💬 Bạn: /chain viết LRU Cache O(1) get/put, không dùng OrderedDict
+
+🤖 Agent Chain bắt đầu
+[Planner]  → tạo implementation plan (HashMap + Doubly Linked List)
+[Coder]    → viết code theo plan
+[Reviewer] → PASS ✅
+
+💻 FINAL CODE:
+class LRUCache:
+    def __init__(self, capacity: int) -> None: ...
+    def get(self, key: int) -> int: ...
+    def put(self, key: int, value: int) -> None: ...
+```
+
+Nếu Reviewer FAIL → tự động quay lại Coder kèm feedback cụ thể, tối đa 3 lần.
+
 ### 🛡️ Resilience: Auto Fallback
 
 ```
@@ -143,8 +185,19 @@ devmate-ai/
 ├── evals/                      # Eval suite
 │   ├── datasets/basic.yaml     # Test cases (input + criteria)
 │   ├── judge.py                # LLM-as-judge với Pydantic
-│   ├── runner.py               # Test runner + HTML report
-│   └── reports/                # Output reports
+│   └── runner.py               # Test runner + HTML report
+│
+├── rag/                        # Advanced RAG pipeline
+│   ├── chunker.py              # AST-based code chunking
+│   ├── embedder.py             # sentence-transformers (local, free)
+│   ├── store.py                # ChromaDB vector store
+│   ├── retriever.py            # Hybrid search + cross-encoder rerank
+│   └── pipeline.py             # RAGPipeline.index() + query()
+│
+├── chain/                      # Multi-Agent LangGraph
+│   ├── state.py                # AgentState TypedDict (shared state)
+│   ├── agents.py               # planner / coder / reviewer nodes
+│   └── graph.py                # StateGraph + conditional edges
 │
 └── data/                       # Chat history, review reports
 ```
@@ -263,6 +316,15 @@ python devmate.py
 💬 Bạn: /save
 💬 Bạn: /load
 
+# RAG — hỏi về codebase
+💬 Bạn: /rag index
+💬 Bạn: /rag fallback chain hoạt động thế nào?
+💬 Bạn: /rag index --force          # re-index khi code thay đổi
+
+# Multi-Agent chain
+💬 Bạn: /chain viết binary search với type hints đầy đủ
+💬 Bạn: /chain implement LRU Cache O(1), không dùng OrderedDict
+
 # Stats & help
 💬 Bạn: /stats
 💬 Bạn: /help
@@ -327,8 +389,8 @@ Production pattern: **dùng Groq cho 90% tasks (free), Claude cho 10% critical t
 - [x] **Bậc 4** — Resilience layer (retry + fallback + context management)
 - [x] **Bậc 5** — Eval suite với LLM-as-judge
 - [x] **Bậc 6** — Observability với Langfuse (trace mọi LLM call)
-- [ ] **Bậc 7** — Advanced RAG (hybrid search + re-ranking + doc index)
-- [ ] **Bậc 8** — Multi-Agent với LangGraph (planner → coder → reviewer)
+- [x] **Bậc 7** — Advanced RAG (hybrid search + BM25 + cross-encoder rerank)
+- [x] **Bậc 8** — Multi-Agent LangGraph (planner → coder → reviewer + self-correction)
 
 ---
 
@@ -336,26 +398,11 @@ Production pattern: **dùng Groq cho 90% tasks (free), Claude cho 10% critical t
 
 - **LLM:** Claude Sonnet 4.5, GPT-4o-mini, Llama 3.3 70B (Groq), Gemini Flash
 - **Observability:** [Langfuse](https://langfuse.com/) — trace, cost, latency dashboard
+- **RAG:** ChromaDB + sentence-transformers + rank-bm25 + cross-encoder
+- **Agent Orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) — state machine với conditional edges
 - **CLI:** [Rich](https://github.com/Textualize/rich) — panels, tables, syntax highlighting
 - **Validation:** [Pydantic v2](https://docs.pydantic.dev) — structured output, type safety
 - **Eval:** Custom LLM-as-judge với YAML test datasets
-
----
-
-## 🎓 What I Learned
-
-Build project này, mình thực hành các skills của một AI Engineer:
-
-1. **LLM API Integration** — streaming, multi-turn, system prompts
-2. **Prompt Engineering** — role/task/format pattern, structured prompts
-3. **Tool Use / Function Calling** — agent autonomous với JSON schema
-4. **Structured Output** — Pydantic forced output, type-safe pipeline
-5. **Multi-provider Abstraction** — interface design, adapter pattern
-6. **Resilience Engineering** — error classification, retry strategies, fallback
-7. **Context Management** — sliding window vs summarization trade-off
-8. **LLM Evaluation** — LLM-as-judge, automated test suite, A/B compare
-9. **Cost Optimization** — cheap inference + smart judge pattern
-10. **Observability** — Langfuse tracing, trace/generation hierarchy, graceful degradation
 
 ---
 
