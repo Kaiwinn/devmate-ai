@@ -26,6 +26,7 @@ from error_handler import parse_provider_error
 from retry_helper import retry_with_backoff
 from fallback_chain import try_with_fallback
 from observability import start_session, log_generation, flush
+from rag import RAGPipeline
 
 from prompts import (
     CHAT_PROMPT,
@@ -54,6 +55,18 @@ MAX_RETRIES = 2
 
 # Giá Sonnet 4.5 (giả định, cập nhật theo thực tế)
 current_provider: LLMProvider = create_provider("claude-sonnet")
+
+# RAG pipeline — lazy init khi user gọi /rag
+rag_pipeline: RAGPipeline | None = None
+
+
+def get_rag() -> RAGPipeline:
+    global rag_pipeline
+    if rag_pipeline is None:
+        rag_pipeline = RAGPipeline(provider=current_provider)
+    else:
+        rag_pipeline.set_provider(current_provider)
+    return rag_pipeline
 
 # Folder lưu chat history
 DATA_DIR = Path("data")
@@ -552,6 +565,11 @@ def show_help():
         "[bold]/agent <task>[/bold]",
         "[bold yellow]Agent tự khám phá & làm task[/bold yellow]",
     )
+    table.add_row(
+        "[bold]/rag <câu hỏi>[/bold]",
+        "[bold cyan]Hỏi về codebase — hybrid search + rerank[/bold cyan]",
+    )
+    table.add_row("[bold]/rag index[/bold]", "Index codebase vào vector DB")
     table.add_row("[bold]/code <file/folder>[/bold]", "Review 1 file hoặc folder")
     table.add_row(
         "[bold]/review <file>[/bold]",
@@ -751,6 +769,29 @@ def main():
                 else:
                     # Không có arg → chỉ switch mode (giống cũ)
                     switch_mode(mode_cmd)
+            # Command /rag — Advanced RAG
+            elif cmd == "/rag":
+                rag = get_rag()
+                if not arg:
+                    console.print(
+                        "[bold]RAG commands:[/bold]\n"
+                        "  [cyan]/rag index[/cyan]          — index codebase hiện tại (.)\n"
+                        "  [cyan]/rag index <folder>[/cyan]  — index folder cụ thể\n"
+                        "  [cyan]/rag index --force[/cyan]   — xóa index cũ và index lại\n"
+                        "  [cyan]/rag <câu hỏi>[/cyan]      — hỏi về codebase"
+                    )
+                elif arg.startswith("index"):
+                    parts = arg.split()
+                    force = "--force" in parts
+                    folder = next(
+                        (p for p in parts[1:] if not p.startswith("--")), "."
+                    )
+                    rag.index(folder, force=force)
+                else:
+                    console.print(f"\n[bold magenta]🔍 RAG ({current_provider.provider_name}):[/bold magenta]")
+                    answer = rag.query(arg)
+                    console.print(Markdown(answer))
+
             # Command /review (structured output)
             elif cmd.startswith("/review"):
                 parts = user_input.split(maxsplit=1)
