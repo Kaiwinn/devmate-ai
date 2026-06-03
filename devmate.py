@@ -27,6 +27,7 @@ from retry_helper import retry_with_backoff
 from fallback_chain import try_with_fallback
 from observability import start_session, log_generation, flush
 from rag import RAGPipeline
+from chain import run_chain
 
 from prompts import (
     CHAT_PROMPT,
@@ -566,6 +567,10 @@ def show_help():
         "[bold yellow]Agent tự khám phá & làm task[/bold yellow]",
     )
     table.add_row(
+        "[bold]/chain <task>[/bold]",
+        "[bold magenta]Multi-agent: planner → coder → reviewer (self-correction)[/bold magenta]",
+    )
+    table.add_row(
         "[bold]/rag <câu hỏi>[/bold]",
         "[bold cyan]Hỏi về codebase — hybrid search + rerank[/bold cyan]",
     )
@@ -769,6 +774,19 @@ def main():
                 else:
                     # Không có arg → chỉ switch mode (giống cũ)
                     switch_mode(mode_cmd)
+            # Command /chain — Multi-Agent LangGraph
+            elif cmd == "/chain":
+                if not arg:
+                    console.print("[red]❌ Cần task. Vd: /chain viết function tính fibonacci với memoization[/red]")
+                else:
+                    final = run_chain(arg)
+                    console.print("\n[bold]📋 PLAN:[/bold]")
+                    console.print(final["plan"])
+                    console.print("\n[bold]💻 FINAL CODE:[/bold]")
+                    console.print(Panel(final["code"], border_style="green"))
+                    status = "✅ PASS" if final["passed"] else f"⚠ Stopped after {final['iterations']} iterations"
+                    console.print(f"\n[bold]Status:[/bold] {status}")
+
             # Command /rag — Advanced RAG
             elif cmd == "/rag":
                 rag = get_rag()

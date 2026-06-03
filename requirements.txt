@@ -7,6 +7,9 @@ google-genai==2.7.0
 # Observability (Bước 6)
 langfuse==4.7.1
 
+# Multi-Agent LangGraph (Bậc 8)
+langgraph==1.2.4
+
 # RAG (Bậc 7)
 chromadb==1.5.9
 sentence-transformers==5.5.1
